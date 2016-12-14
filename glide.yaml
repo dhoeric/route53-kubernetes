@@ -5,3 +5,5 @@ import:
 - package: github.com/aws/aws-sdk-go
   version: c924893c38ecc04b18d7aab8a7aa561cb8b4c4cc
 - package: github.com/golang/glog
+- package: github.com/cloudflare/cloudflare-go
+  version: v0.7.1-beta

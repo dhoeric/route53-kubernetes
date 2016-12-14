@@ -1,7 +1,7 @@
-# Kubernetes => Route53 Mapping Service
+# Kubernetes => Route53 (or Cloudflare) Mapping Service
 
 This is a Kubernetes service that polls services (in all namespaces) that are configured
-with the label `dns=route53` and adds the appropriate alias to the domain specified by
+with the label `dns=route53`/`dns=cloudflare` and adds the appropriate alias to the domain specified by
 the annotation `domainName=sub.mydomain.io`. Multiple domains and top level domains are also supported:
 `domainName=.mydomain.io,sub1.mydomain.io,sub2.mydomain.io`
 
@@ -33,7 +33,7 @@ spec:
         app: route53-kubernetes
     spec:
       containers:
-        - image: quay.io/molecule/route53-kubernetes:v1.3.0
+        - image: dhoeric/route53-kubernetes:v1.3.1
           name: route53-kubernetes
 ```
 
@@ -128,7 +128,7 @@ spec:
           secret:
             secretName: aws-creds
       containers:
-        - image: quay.io/molecule/route53-kubernetes:v1.3.0
+        - image: dhoeric/route53-kubernetes:v1.3.1
           name: route53-kubernetes
           volumeMounts:
             - name: ssl-cert
@@ -154,7 +154,7 @@ spec:
 
 We use glide to manage dependencies. To fetch the dependencies to your local `vendor/` folder please run:
 ```bash
-glide install -v
+glide install -v -s
 ```
 
 ### Build the Image

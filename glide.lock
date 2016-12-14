@@ -1,5 +1,5 @@
-hash: a300272a5e6a1abc109bdd35b981375ee5e337ae19c6f01994ac294f3835173b
-updated: 2016-09-23T10:43:50.238036501-05:00
+hash: 82ad50488f5a40d89960ccabeccc27c90642b23a2e45e96ba7c3419644cfe9fd
+updated: 2016-12-13T17:47:26.249358608+08:00
 imports:
 - name: github.com/aws/aws-sdk-go
   version: c924893c38ecc04b18d7aab8a7aa561cb8b4c4cc
@@ -32,6 +32,8 @@ imports:
   - quantile
 - name: github.com/blang/semver
   version: 31b736133b98f26d5e078ec9eb591666edfd091f
+- name: github.com/cloudflare/cloudflare-go
+  version: ba610b87e64f5e99e8ddd614e50669c66c2ec9b5
 - name: github.com/coreos/go-oidc
   version: 5cf2aa52da8c574d3aa4458f471ad6ae2240fe6b
   subpackages:
@@ -196,6 +198,8 @@ imports:
   - libcontainer/utils
 - name: github.com/pborman/uuid
   version: ca53cad383cad2479bbba7f7a1a05797ec1386e4
+- name: github.com/pkg/errors
+  version: 248dadf4e9068a0b3e79f02ed0a610d935de5302
 - name: github.com/prometheus/client_golang
   version: 3b78d7a77f51ccbc364d4bc170920153022cfd08
   subpackages:
@@ -230,6 +234,7 @@ imports:
   - http2/hpack
   - internal/timeseries
   - proxy
+  - publicsuffix
   - trace
   - websocket
 - name: golang.org/x/oauth2

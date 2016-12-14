@@ -21,10 +21,16 @@ import (
 	"k8s.io/kubernetes/pkg/client/transport"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/labels"
+
+	"github.com/cloudflare/cloudflare-go"
+	"golang.org/x/net/publicsuffix"
 )
 
 // Don't actually commit the changes to route53 records, just print out what we would have done.
 var dryRun bool
+var cfAPIKey, cfAPIEmail string
+var cfEnable bool
+var cfAPI *cloudflare.API
 
 func init() {
 	dryRunStr := os.Getenv("DRY_RUN")
@@ -35,7 +41,7 @@ func init() {
 
 func main() {
 	flag.Parse()
-	glog.Info("Route53 Update Service")
+	glog.Info("DNS Update Service")
 
 	config, err := restclient.InClusterConfig()
 	if err != nil {
@@ -104,23 +110,47 @@ func main() {
 		glog.Fatal("Failed to make AWS connection")
 	}
 
-	selector := "dns=route53"
-	l, err := labels.Parse(selector)
-	if err != nil {
-		glog.Fatalf("Failed to parse selector %q: %v", selector, err)
+	cfAPIKey := os.Getenv("CF_API_KEY")
+	cfAPIEmail := os.Getenv("CF_API_EMAIL")
+	if cfAPIKey != "" && cfAPIEmail != "" {
+		cfEnable = true
 	}
-	listOptions := api.ListOptions{
+
+	if cfEnable {
+		var err error
+		cfAPI, err = cloudflare.New(cfAPIKey, cfAPIEmail)
+		if err != nil {
+			glog.Fatal(err)
+		}
+	}
+
+	r53Selector := "dns=route53"
+	l, err := labels.Parse(r53Selector)
+	if err != nil {
+		glog.Fatalf("Failed to parse selector %q: %v", r53Selector, err)
+	}
+	r53ListOptions := api.ListOptions{
+		LabelSelector: l,
+	}
+
+	cfSelector := "dns=cloudflare"
+	l, err = labels.Parse(cfSelector)
+	if err != nil {
+		glog.Fatalf("Failed to parse selector %q: %v", cfSelector, err)
+	}
+	cfListOptions := api.ListOptions{
 		LabelSelector: l,
 	}
 
 	glog.Infof("Starting Service Polling every 30s")
 	for {
-		services, err := c.Services(api.NamespaceAll).List(listOptions)
+		// Update route53 records
+		services, err := c.Services(api.NamespaceAll).List(r53ListOptions)
 		if err != nil {
 			glog.Fatalf("Failed to list pods: %v", err)
 		}
 
-		glog.Infof("Found %d DNS services in all namespaces with selector %q", len(services.Items), selector)
+		glog.Infof("Found %d DNS services in all namespaces with selector %q", len(services.Items), r53Selector)
 		for i := range services.Items {
 			s := &services.Items[i]
 			hn, err := serviceHostname(s)
@@ -140,13 +170,13 @@ func main() {
 				domain := domains[j]
 
 				glog.Infof("Creating DNS for %s service: %s -> %s", s.Name, hn, domain)
-				elbZoneID, err := hostedZoneID(elbAPI, hn)
+				elbZoneID, err := r53HostedZoneId(elbAPI, hn)
 				if err != nil {
 					glog.Warningf("Couldn't get zone ID: %s", err)
 					continue
 				}
 
-				zone, err := getDestinationZone(domain, r53Api)
+				zone, err := r53GetDestinationZone(domain, r53Api)
 				if err != nil {
 					glog.Warningf("Couldn't find destination zone: %s", err)
 					continue
@@ -156,18 +186,89 @@ func main() {
 				zoneParts := strings.Split(zoneID, "/")
 				zoneID = zoneParts[len(zoneParts)-1]
 
-				if err = updateDNS(r53Api, hn, elbZoneID, strings.TrimLeft(domain, "."), zoneID); err != nil {
+				if err = r53UpdateDNS(r53Api, hn, elbZoneID, strings.TrimLeft(domain, "."), zoneID); err != nil {
 					glog.Warning(err)
 					continue
 				}
 				glog.Infof("Created dns record set: domain=%s, zoneID=%s", domain, zoneID)
 			}
 		}
+
+		if cfEnable {
+			// Update Cloudflare records
+			services, err = c.Services(api.NamespaceAll).List(cfListOptions)
+			if err != nil {
+				glog.Fatalf("Failed to list pods: %v", err)
+			}
+
+			glog.Infof("Found %d DNS services in all namespaces with selector %q", len(services.Items), cfSelector)
+			for i := range services.Items {
+				s := &services.Items[i]
+				hn, err := serviceHostname(s)
+				if err != nil {
+					glog.Warningf("Couldn't find hostname for %s: %s", s.Name, err)
+					continue
+				}
+
+				annotation, ok := s.ObjectMeta.Annotations["domainName"]
+				if !ok {
+					glog.Warningf("Domain name not set for %s", s.Name)
+					continue
+				}
+
+				domains := strings.Split(annotation, ",")
+				for j := range domains {
+					domain := domains[j]
+
+					glog.Infof("Creating DNS for %s service: %s -> %s", s.Name, hn, domain)
+
+					// Fetch the zone ID
+					domainTLD, _ := publicsuffix.EffectiveTLDPlusOne(domain)
+					zoneID, err := cfAPI.ZoneIDByName(domainTLD)
+					if err != nil {
+						glog.Warning(err)
+						continue
+					}
+
+					// Prepare DNS record
+					var rr cloudflare.DNSRecord
+					rr.Name = domain
+					rr.Type = "CNAME"
+
+					rrs, err := cfAPI.DNSRecords(zoneID, rr)
+					if err != nil {
+						glog.Warning(err)
+						continue
+					}
+
+					// Update/Create DNS record
+					rr.Content = hn
+					if len(rrs) > 0 {
+
+						err := cfAPI.UpdateDNSRecord(zoneID, rrs[0].ID, rr)
+						if err != nil {
+							glog.Warning(err)
+							continue
+						}
+
+						glog.Infof("Updated dns record set: domain=%s, content=%s", domain, hn)
+					} else {
+						res, err := cfAPI.CreateDNSRecord(zoneID, rr)
+						if err != nil {
+							glog.Warning(err)
+							continue
+						}
+						glog.Infof("Created dns record set: domain=%s, content=%s", domain, hn)
+						glog.Info(res)
+					}
+				}
+			}
+		}
 		time.Sleep(30 * time.Second)
 	}
 }
 
-func getDestinationZone(domain string, r53Api *route53.Route53) (*route53.HostedZone, error) {
+func r53GetDestinationZone(domain string, r53Api *route53.Route53) (*route53.HostedZone, error) {
 	tld, err := getTLD(domain)
 	if err != nil {
 		return nil, err
@@ -253,7 +354,7 @@ func loadBalancerNameFromHostname(hostname string) (string, error) {
 	return name, nil
 }
 
-func hostedZoneID(elbAPI *elb.ELB, hostname string) (string, error) {
+func r53HostedZoneId(elbAPI *elb.ELB, hostname string) (string, error) {
 	elbName, err := loadBalancerNameFromHostname(hostname)
 	if err != nil {
 		return "", fmt.Errorf("Couldn't parse ELB hostname: %v", err)
@@ -277,7 +378,7 @@ func hostedZoneID(elbAPI *elb.ELB, hostname string) (string, error) {
 	return *descs[0].CanonicalHostedZoneNameID, nil
 }
 
-func updateDNS(r53Api *route53.Route53, hn, hzID, domain, zoneID string) error {
+func r53UpdateDNS(r53Api *route53.Route53, hn, hzID, domain, zoneID string) error {
 	at := route53.AliasTarget{
 		DNSName:              &hn,
 		EvaluateTargetHealth: aws.Bool(false),
